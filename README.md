@@ -15,25 +15,11 @@ Now that my MA Creative Practice at the Make Happen Institute has begun, I'm dev
 - **Black and red, on purpose.** The colour scheme preserves night vision, so GNOME can be operated backstage and in darkened installation spaces without dazzling the operator.
 - **Runs in a browser.** No install, so it is easy to deploy on any machine instantly. Works on desktop and mobile, including iOS.
 
-## Adding field recordings to the sound bank
-
-1. Put audio files in the `sounds/` folder (MP3 keeps them small; WAV works too).
-2. List them in `sounds/bank.json`:
-
-```json
-[
-  { "name": "Tide on shingle", "file": "sounds/tide-on-shingle.mp3" },
-  { "name": "Harbour rigging", "file": "sounds/harbour-rigging.mp3" }
-]
-```
-
-3. Push to GitHub. Each sample player now shows a **Bank** menu with those recordings. While the list is empty, the menu stays hidden and people can still load their own files.
-
 ## Changelog
 
 ### v0.2: GNOME (Pushed to GitHub Pages October 3rd 2026, MA Action 1)
 
-- Added minor chords.
+- Added minor keys.
 - Pushed with sharable link for feedback.
 
 ### v0.2: GNOME (started 29 September 2026, MA Action 1)
