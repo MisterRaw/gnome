@@ -788,6 +788,11 @@ const DTMF_MAP = {
 
 const TEST_FREQS = [55, 82.4, 110, 130.8, 164.8, 220];
 
+// Sample-player Vol fader headroom above unity (3 = +9.5dB at full fader).
+// Field recordings are often quiet by nature, so "full volume" needs to mean
+// more than just "as loud as the file already is."
+const SAMPLE_VOL_BOOST = 3;
+
 const state = {
   running: false,
   root: 'C',
@@ -1398,9 +1403,14 @@ function createSamplePlayer(sfx) {
     destroy();
     frozen = false; playStartTime = null; paused = false; pausePosition = 0;
 
-    const sGain = new Tone.Gain(parseInt($('sample-vol').value) / 100);
+    // Field recordings are often captured quietly to avoid clipping on site,
+    // so the fader goes past unity (up to SAMPLE_VOL_BOOST) rather than
+    // topping out at 0dB like the generator layers do. sLimiter catches any
+    // overs that boost introduces on louder source material.
+    const sGain = new Tone.Gain((parseInt($('sample-vol').value) / 100) * SAMPLE_VOL_BOOST);
     const sPan = new Tone.Panner(parseInt($('sample-pan').value) / 100);
-    sGain.connect(sPan); sPan.connect(Tone.Destination);
+    const sLimiter = new Tone.Limiter(-0.5);
+    sGain.connect(sPan); sPan.connect(sLimiter); sLimiter.connect(Tone.Destination);
 
     const sReverb = new Tone.Reverb({ decay: 8, wet: parseInt($('sample-reverb').value) / 100, preDelay: 0.04 });
     await sReverb.generate();
@@ -1448,7 +1458,7 @@ function createSamplePlayer(sfx) {
       }
     };
 
-    sNodes = { player, sEQ, sFilter, sDelay, sReverb, sGain, sPan };
+    sNodes = { player, sEQ, sFilter, sDelay, sReverb, sGain, sPan, sLimiter };
     updateWow();
 
     // Buffer already decoded — enable controls immediately
@@ -1470,7 +1480,7 @@ function createSamplePlayer(sfx) {
     if (scrub) { scrub.value = 0; scrub.disabled = true; }
     if (!sNodes) return;
     frozen = false; playStartTime = null; paused = false; pausePosition = 0;
-    ['player','sEQ','sFilter','sDelay','sReverb','sGain','sPan'].forEach(k => {
+    ['player','sEQ','sFilter','sDelay','sReverb','sGain','sPan','sLimiter'].forEach(k => {
       try { sNodes[k].stop(); }    catch(e) {}
       try { sNodes[k].dispose(); } catch(e) {}
     });
@@ -1625,7 +1635,7 @@ function createSamplePlayer(sfx) {
   $('sample-vol').addEventListener('input', function() {
     const v = parseInt(this.value);
     $('sample-vol-val').textContent = v;
-    if (sNodes) sNodes.sGain.gain.rampTo(v / 100, 0.3);
+    if (sNodes) sNodes.sGain.gain.rampTo((v / 100) * SAMPLE_VOL_BOOST, 0.3);
   });
 
   // Speed
