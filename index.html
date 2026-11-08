@@ -836,6 +836,7 @@ async function buildNodes() {
   await reverb.generate();
   const limiter = new Tone.Limiter(-2);
   masterGain.chain(reverb, limiter, Tone.Destination);
+  limiter.connect(recordBus); // also feed the WAV recorder tap, see RECORDER below
 
   // DRONE
   const droneGain = new Tone.Gain(state.volumes.drone / 100);
@@ -1411,6 +1412,7 @@ function createSamplePlayer(sfx) {
     const sPan = new Tone.Panner(parseInt($('sample-pan').value) / 100);
     const sLimiter = new Tone.Limiter(-0.5);
     sGain.connect(sPan); sPan.connect(sLimiter); sLimiter.connect(Tone.Destination);
+    sLimiter.connect(recordBus); // also feed the WAV recorder tap, see RECORDER below
 
     const sReverb = new Tone.Reverb({ decay: 8, wet: parseInt($('sample-reverb').value) / 100, preDelay: 0.04 });
     await sReverb.generate();
@@ -1903,12 +1905,80 @@ createSamplePlayer('d');
 loadSoundBank();
 
 // ================================================================
-// RECORDER — captures master output, saves as .webm (most browsers) or
-// .mp4 (iOS Safari, which doesn't support MediaRecorder webm output).
+// RECORDER — captures the full mix as real 16-bit PCM WAV.
+//
+// Browsers' built-in recording API (MediaRecorder, which Tone.Recorder
+// wraps) only knows how to output compressed containers — webm/Opus or
+// mp4/AAC — there is no browser option for raw WAV. DAWs like Logic Pro
+// don't reliably accept webm on drag-and-drop, so rather than hand back a
+// file that needs converting before it's usable, this taps the actual
+// audio graph with a ScriptProcessorNode and writes a real WAV file by
+// hand: the same technique in-browser WAV recorders have used for years.
+//
+// Every final-stage node (the generator limiter, each sample player's
+// limiter) also fans out into recordBus in addition to its normal
+// connection to Destination — see "also feed the WAV recorder tap"
+// above. recordBus is declared here, but buildNodes()/sample build()
+// only run later, on user interaction, so it already exists by then.
 // ================================================================
-function pickRecorderMime() {
-  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return null;
-  return ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(m => MediaRecorder.isTypeSupported(m)) || null;
+const recordBus = new Tone.Gain(1);
+const rawCtx = Tone.getContext().rawContext;
+const recordTap = rawCtx.createScriptProcessor(4096, 2, 2);
+recordBus.connect(recordTap);
+// ScriptProcessorNode only fires its callback while it has a path to the
+// destination, so route it onward through a silent sink rather than just
+// leaving it dangling (which would silently stop recording on some browsers).
+const recordSink = rawCtx.createGain();
+recordSink.gain.value = 0;
+recordTap.connect(recordSink);
+recordSink.connect(rawCtx.destination);
+
+let recActive = false;
+let recChunksL = [];
+let recChunksR = [];
+
+recordTap.onaudioprocess = (e) => {
+  if (!recActive) return;
+  recChunksL.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  recChunksR.push(new Float32Array(e.inputBuffer.getChannelData(1)));
+};
+
+// Standard 44-byte RIFF/WAVE header + interleaved 16-bit PCM data.
+function encodeWav(chunksL, chunksR, sampleRate) {
+  const totalLen = chunksL.reduce((n, c) => n + c.length, 0);
+  const left = new Float32Array(totalLen);
+  const right = new Float32Array(totalLen);
+  let off = 0;
+  for (let i = 0; i < chunksL.length; i++) {
+    left.set(chunksL[i], off);
+    right.set(chunksR[i], off);
+    off += chunksL[i].length;
+  }
+
+  const blockAlign = 4; // 2 channels * 16-bit
+  const dataSize = totalLen * blockAlign;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const writeStr = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+
+  writeStr(0, 'RIFF'); view.setUint32(4, 36 + dataSize, true); writeStr(8, 'WAVE');
+  writeStr(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 2, true); // channels
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true); // byte rate
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true); // bits per sample
+  writeStr(36, 'data'); view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let i = 0; i < totalLen; i++) {
+    const l = Math.max(-1, Math.min(1, left[i]));
+    const r = Math.max(-1, Math.min(1, right[i]));
+    view.setInt16(offset, l < 0 ? l * 0x8000 : l * 0x7fff, true); offset += 2;
+    view.setInt16(offset, r < 0 ? r * 0x8000 : r * 0x7fff, true); offset += 2;
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
 }
 
 // Offers a finished recording to the listener. Inside a published Claude
@@ -1934,28 +2004,25 @@ async function saveRecording(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-const recorderMime = pickRecorderMime();
-const recorder = new Tone.Recorder(recorderMime ? { mimeType: recorderMime } : undefined);
-Tone.Destination.connect(recorder);
-let recActive = false;
-
 document.getElementById('rec-btn').addEventListener('click', async () => {
   const btn = document.getElementById('rec-btn');
   try {
     await Tone.start();
     if (!recActive) {
-      await recorder.start();
+      recChunksL = [];
+      recChunksR = [];
       recActive = true;
       btn.textContent = '■ Stop';
       btn.classList.add('recording');
     } else {
-      const blob = await recorder.stop();
       recActive = false;
       btn.textContent = '● Rec';
       btn.classList.remove('recording');
-      const ext = (recorderMime || '').includes('mp4') ? 'mp4' : 'webm';
+      const blob = encodeWav(recChunksL, recChunksR, rawCtx.sampleRate);
+      recChunksL = [];
+      recChunksR = [];
       const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
-      await saveRecording(blob, `gnome-${ts}.${ext}`);
+      await saveRecording(blob, `gnome-${ts}.wav`);
     }
   } catch (e) {
     console.error('Recording error:', e);
