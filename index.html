@@ -1981,21 +1981,8 @@ function encodeWav(chunksL, chunksR, sampleRate) {
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
-// Offers a finished recording to the listener. Inside a published Claude
-// Artifact, a direct <a download> click is silently blocked by the viewer
-// sandbox, so this uses the `downloads` capability there instead — on a
-// plain self-hosted page (e.g. pushed to GitHub Pages) window.claude
-// doesn't exist at all, so it falls straight to the classic download.
-async function saveRecording(blob, filename) {
-  if (typeof window.claude?.use === 'function') {
-    try {
-      const downloads = await window.claude.use('downloads');
-      if (downloads) { await downloads.save({ filename, data: blob }); return; }
-    } catch (e) {
-      if (e && e.code === 'declined') return; // listener said no — leave it there
-      // any other failure (capability unavailable, rate-limited, etc.) — fall through
-    }
-  }
+// Offers a finished recording to the listener as a direct browser download.
+function saveRecording(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.download = filename;
